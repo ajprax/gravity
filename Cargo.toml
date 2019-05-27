@@ -1,0 +1,20 @@
+[package]
+name = "piston-tutorial"
+version = "0.1.0"
+authors = ["Aaron Feldstein <ajprax@gmail.com>"]
+edition = "2018"
+
+[[bin]]
+name = "spinning-square"
+path = "src/main.rs"
+
+[[bin]]
+name= "units"
+path = "src/units.rs"
+
+[dependencies]
+piston = "0.42.0"
+piston2d-graphics = "0.30.0"
+pistoncore-glutin_window = "0.54.0"
+piston2d-opengl_graphics = "0.59.0"
+fps_counter = "1.0.0"
