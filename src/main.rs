@@ -51,6 +51,10 @@ impl Velocity {
     fn apply(&self, pos: Position) -> Position {
         Position::new(self.x + pos.x, self.y + pos.y)
     }
+
+    fn speed(&self) -> f64 {
+        (self.x.powi(2) + self.y.powi(2)).sqrt()
+    }
 }
 
 impl Add for Velocity {
@@ -148,9 +152,9 @@ impl Planet {
         }
     }
 
-    fn render(&self, context: &Context, gl: &mut GlGraphics) {
+    fn render(&self, c: &Context, gl: &mut GlGraphics) {
         use graphics::*;
-        ellipse(self.color, [self.pos.x - self.r, self.pos.y - self.r, self.r * 2.0, self.r * 2.0], context.transform, gl);
+        ellipse(self.color, [self.pos.x - self.r, self.pos.y - self.r, self.r * 2.0, self.r * 2.0], c.transform, gl);
     }
 
     fn update(&self, a: Acceleration) -> Planet {
@@ -167,6 +171,10 @@ impl Planet {
     fn is_onscreen(&self, w: f64, h: f64) -> bool {
         -self.r <= self.pos.x && self.pos.x < w + self.r &&
         -self.r <= self.pos.y && self.pos.y < h + self.r
+    }
+
+    fn contains_point(&self, x: f64, y: f64) -> bool {
+        self.pos.distance(&Position::new(x, y)) < self.r
     }
 }
 
@@ -229,6 +237,11 @@ struct State {
     simulation_speed: usize,
     pause: bool,
     fps: FPSCounter,
+    // id of the focused planet
+    focused: Option<usize>,
+    // id of the moused over planet, used in cases where focused is none
+    hovered: Option<usize>,
+    cursor: [f64; 2],
 }
 
 impl State {
@@ -240,7 +253,10 @@ impl State {
             satellites: vec![],
             simulation_speed: 1,
             pause: false,
-            fps: FPSCounter::new()
+            fps: FPSCounter::new(),
+            focused: None,
+            hovered: None,
+            cursor: [0.0, 0.0],
         }
     }
 
@@ -313,12 +329,12 @@ impl State {
         ));
     }
 
-    fn random_setup(&mut self, num_planets: usize, num_satellites: usize) {
+    fn random_setup(&mut self, num_planets: usize, num_satellites: usize, w: f64, h: f64) {
         let mut rng = rand::thread_rng();
         for _ in 0..num_planets {
             self.add_planet(Planet::new(
                 rng.gen_range(5.0, 10.0),
-                Position::new(rng.gen_range(0.0, 2560.0), rng.gen_range(0.0, 1440.0)),
+                Position::new(rng.gen_range(0.0, w), rng.gen_range(0.0, h)),
                 Velocity::new(rng.gen_range(-2.0, 2.0), rng.gen_range(-2.0, 2.0)),
                 rng.gen_range(150_000_000_000.0, 300_000_000_000.0),
                 random_color(),
@@ -327,7 +343,7 @@ impl State {
         for _ in 0..num_satellites {
             self.add_satellite(
                 Satellite::new(
-                    Position::new(rng.gen_range(0.0, 2560.0), rng.gen_range(0.0, 1440.0)),
+                    Position::new(rng.gen_range(0.0, w), rng.gen_range(0.0, h)),
                     Velocity::new(rng.gen_range(-1.0, 1.0), rng.gen_range(-1.0, 1.0)),
                 )
             )
@@ -352,14 +368,15 @@ impl State {
                 // for each planet and satellite, calculate the effect of gravity of all (other) planets,
                 // add them together, and apply them
                 let updated_planets: Vec<Planet> = self.planets.par_iter().map(|p| {
-                    let a = self.planets.iter()
+                    let a = self.planets.par_iter()
                         .filter(|p2| p.id != p2.id)
                         .map(|p2| p2.gravity(&p.pos))
-                        .fold(Acceleration::zero(), |a1, a2| a1 + a2);
+                        .reduce(|| Acceleration::zero(), |a1, a2| a1 + a2);
                     p.update(a)
                 }).collect();
-                // check for planetary collisions
-                let updated_planets: Vec<Planet> = updated_planets.par_iter().enumerate().filter_map(|(i, p)| {
+                // check for planetary collisions, detect collisions first then resolve them
+                // TODO: handle case of A colliding with B colliding with C, this is pretty unlikely to happen within one update
+                let colliding: Vec<(Planet, Vec<&Planet>)> =  updated_planets.par_iter().enumerate().filter_map(|(i, p)| {
                     let colliding: Vec<(usize, &Planet)> = updated_planets.iter().filter(|p2| p.id != p2.id).enumerate().filter_map(|(i2, p2)| {
                         // planets are considered colliding if the center of one is within another
                         if p.pos.distance(&p2.pos) < p.r.max(p2.r) {
@@ -371,22 +388,39 @@ impl State {
 
                     if colliding.len() == 0 {
                         // no collisions
-                        Some(p.clone())
-                    } else if colliding.par_iter().any(|(i2, p2)| i2 < &i) {
+                        Some((p.clone(), colliding.into_iter().map(|(i, p2)| p2).collect()))
+                    } else if colliding.par_iter().any(|(i2, p2)| *i2 < i) {
                         // this planet was already absorbed by one earlier in the list, so just drop it
                         None
                     } else{
                         // leftmost participant in a collision, absorb the others
-                        let absorbed: Planet = colliding.into_iter().fold(p.clone(), |p1, (i2, p2)| p1.absorb(p2));
-                        Some(absorbed)
+                        Some((p.clone(), colliding.into_iter().map(|(i, p2)| p2).collect()))
                     }
-                    // TODO: handle case of A colliding with B colliding with C, this is pretty unlikely to happen within one update
                 }).collect();
+                // resolve collisions
+                let updated_planets: Vec<Planet> = colliding.par_iter().map(|(p, to_absorb)| {
+                    to_absorb.into_iter().fold(p.clone(), |p1, p2| p1.absorb(p2))
+                }).collect();
+
+                // if the focused planet got absorbed, move focus to the absorbing planet
+                if let Some(focused_pid) = self.focused {
+                    for (absorber, absorbed) in colliding {
+                        if focused_pid == absorber.id {
+                            // focus can stay the same
+                            break
+                        } else if absorbed.iter().any(|p2| p2.id == focused_pid) {
+                            // shift focus to absorber
+                            self.focused = Some(absorber.id);
+                            break
+                        }
+                    }
+                }
+
                 let updated_satellites: Vec<Satellite> = self.satellites.par_iter()
                     .map(|s| {
-                        let a = self.planets.iter()
+                        let a = self.planets.par_iter()
                             .map(|p| p.gravity(&s.pos))
-                            .fold(Acceleration::zero(), |a1, a2| a1 + a2);
+                            .reduce(Acceleration::zero, |a1, a2| a1 + a2);
                         s.update(a)
                     })
                     // check for satellites colliding with planets
@@ -394,6 +428,7 @@ impl State {
                         !updated_planets.par_iter().any(|p| s.pos.distance(&p.pos) < p.r)
                     })
                     .collect();
+
                 // apply updates at the end
                 self.planets = updated_planets;
                 self.satellites = updated_satellites;
@@ -402,11 +437,35 @@ impl State {
     }
 
     fn render(&mut self, args: &RenderArgs, font: &mut GlyphCache, gl: &mut GlGraphics) {
+        // check if the hovered planet has changed
+        self.hovered = self.planets.iter().filter(|p| p.contains_point(self.cursor[0], self.cursor[1])).next().map(|p| p.id);
+
         use graphics::*;
         gl.draw(args.viewport(), |c, gl| {
             clear(BLACK, gl);
             self.planets.iter().for_each(|p| p.render(&c, gl));
             self.satellites.iter().for_each(|s| s.render(&c, gl));
+
+            if let Some(pid) = self.focused.or(self.hovered) {
+                let p = self.planets.iter().find(|p| p.id == pid).unwrap();
+                let r = p.r * 1.5;
+                let ll = p.r * 3.0 / 2.5;
+                let x = p.pos.x;
+                let y = p.pos.y;
+                line(GREEN, 1.0, [x - r, y - r, x - r + ll, y - r], c.transform, gl);
+                line(GREEN, 1.0, [x - r, y - r, x - r, y - r + ll], c.transform, gl);
+                line(GREEN, 1.0, [x + r, y - r, x + r - ll, y - r], c.transform, gl);
+                line(GREEN, 1.0, [x + r, y - r, x + r, y - r + ll], c.transform, gl);
+                line(GREEN, 1.0, [x - r, y + r, x - r + ll, y + r], c.transform, gl);
+                line(GREEN, 1.0, [x - r, y + r, x - r, y + r - ll], c.transform, gl);
+                line(GREEN, 1.0, [x + r, y + r, x + r - ll, y + r], c.transform, gl);
+                line(GREEN, 1.0, [x + r, y + r, x + r, y + r - ll], c.transform, gl);
+                text(WHITE, 22, &format!("radius: {:.1?}", p.r), font, c.transform.trans(100.0, 300.0), gl).unwrap();
+                text(WHITE, 22, &format!("mass: {:.1?}", p.mass), font, c.transform.trans(100.0, 340.0), gl).unwrap();
+                text(WHITE, 22, &format!("speed: {:.1?}", p.vel.speed()), font, c.transform.trans(100.0, 380.0), gl).unwrap();
+                text(WHITE, 22, &format!("position: {:.1?}, {:.1?}", p.pos.x, p.pos.y), font, c.transform.trans(100.0, 420.0), gl).unwrap();
+            }
+
             text(WHITE, 22, &format!("fps: {}", self.fps.tick()), font, c.transform.trans(100.0, 100.0), gl).unwrap();
             text(WHITE, 22, &format!("planets: {}", self.planets.len()), font, c.transform.trans(100.0, 150.0), gl).unwrap();
             text(WHITE, 22, &format!("speed: {}x{}", self.simulation_speed, if self.pause { " (paused)" } else { "" }), font, c.transform.trans(100.0, 200.0), gl).unwrap();
@@ -419,7 +478,8 @@ impl State {
         {
             self.planets.clear();
             self.satellites.clear();
-            self.random_setup(500, 0);
+            self.focused = None;
+            self.random_setup(500, 0, w, h);
         }
     }
 }
@@ -460,12 +520,20 @@ fn main() {
             }
         });
 
+        e.mouse_cursor(|c| {
+            state.cursor = c;
+        });
+
         e.press(|b| {
             match b {
                 Button::Mouse(MouseButton::Left) => {
+                    state.focused = state.hovered;
+                },
+                Button::Mouse(MouseButton::Right) => {
                     state.planets.clear();
                     state.satellites.clear();
-                    state.random_setup(500, 0);
+                    let Size { width, height } = window.size();
+                    state.random_setup(500, 0, width, height);
                 },
                 Button::Keyboard(Key::NumPadPlus) | Button::Keyboard(Key::Equals) => {
                     state.increase_simulation_speed();
