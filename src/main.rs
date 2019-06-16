@@ -176,6 +176,15 @@ impl Planet {
     fn contains_point(&self, x: f64, y: f64) -> bool {
         self.pos.distance(&Position::new(x, y)) < self.r
     }
+
+    fn facts(&self) -> Vec<String> {
+        vec![
+            format!("mass: {:.0?}", self.mass),
+            format!("radius: {:.2?}", self.r),
+            format!("position: {:.2?}, {:.2?}", self.pos.x, self.pos.y),
+            format!("velocity: {:.2?}, {:.2?}", self.vel.x, self.vel.y),
+        ]
+    }
 }
 
 #[derive(Debug)]
@@ -186,13 +195,15 @@ struct Satellite {
 }
 
 impl Satellite {
+    const R: f64 = 2.0;
+
     fn new(pos: Position, vel: Velocity) -> Satellite {
         Satellite { id: 0, pos, vel }
     }
 
     fn render(&self, context: &Context, gl: &mut GlGraphics) {
         use graphics::*;
-        ellipse(RED, [self.pos.x - 2.0, self.pos.y - 2.0, 4.0, 4.0], context.transform, gl);
+        ellipse(RED, [self.pos.x - Satellite::R, self.pos.y - Satellite::R, Satellite::R * 2.0, Satellite::R * 2.0], context.transform, gl);
     }
 
     fn update(&self, a: Acceleration) -> Satellite {
@@ -204,8 +215,19 @@ impl Satellite {
     }
     
     fn is_onscreen(&self, w: f64, h: f64) -> bool {
-        -2.0 <= self.pos.x && self.pos.x < w + 2.0 && 
-        -2.0 <= self.pos.y && self.pos.y < h + 2.0
+        -Satellite::R <= self.pos.x && self.pos.x < w + Satellite::R &&
+        -Satellite::R <= self.pos.y && self.pos.y < h + Satellite::R
+    }
+
+    fn contains_point(&self, x: f64, y: f64) -> bool {
+        self.pos.distance(&Position::new(x, y)) < Satellite::R
+    }
+
+    fn facts(&self) -> Vec<String> {
+        vec![
+            format!("position: {:.2?}, {:.2?}", self.pos.x, self.pos.y),
+            format!("velocity: {:.2?}, {:.2?}", self.vel.x, self.vel.y),
+        ]
     }
 }
 
@@ -229,6 +251,13 @@ fn random_color() -> [f32; 4]{
 
 const G: f64 = 6.67408e-11;
 
+// the id of the focused (or hovered) object
+#[derive(Copy, Clone, Debug)]
+enum Focus {
+    Planet(usize),
+    Satellite(usize),
+}
+
 struct State {
     next_planet_id: usize,
     planets: Vec<Planet>,
@@ -237,10 +266,8 @@ struct State {
     simulation_speed: usize,
     pause: bool,
     fps: FPSCounter,
-    // id of the focused planet
-    focused: Option<usize>,
-    // id of the moused over planet, used in cases where focused is none
-    hovered: Option<usize>,
+    focused: Option<Focus>,
+    hovered: Option<Focus>,
     cursor: [f64; 2],
 }
 
@@ -251,7 +278,7 @@ impl State {
             planets: vec![],
             next_satellite_id: 0,
             satellites: vec![],
-            simulation_speed: 1,
+            simulation_speed: 5,
             pause: false,
             fps: FPSCounter::new(),
             focused: None,
@@ -335,8 +362,8 @@ impl State {
             self.add_planet(Planet::new(
                 rng.gen_range(5.0, 10.0),
                 Position::new(rng.gen_range(0.0, w), rng.gen_range(0.0, h)),
-                Velocity::new(rng.gen_range(-2.0, 2.0), rng.gen_range(-2.0, 2.0)),
-                rng.gen_range(150_000_000_000.0, 300_000_000_000.0),
+                Velocity::new(rng.gen_range(-0.25, 0.25), rng.gen_range(-0.25, 0.25)),
+                rng.gen_range(1_500_000_000.0, 3_000_000_000.0),
                 random_color(),
             ));
         }
@@ -403,14 +430,14 @@ impl State {
                 }).collect();
 
                 // if the focused planet got absorbed, move focus to the absorbing planet
-                if let Some(focused_pid) = self.focused {
+                if let Some(Focus::Planet(focused_pid)) = self.focused {
                     for (absorber, absorbed) in colliding {
                         if focused_pid == absorber.id {
                             // focus can stay the same
                             break
                         } else if absorbed.iter().any(|p2| p2.id == focused_pid) {
                             // shift focus to absorber
-                            self.focused = Some(absorber.id);
+                            self.focused = Some(Focus::Planet(absorber.id));
                             break
                         }
                     }
@@ -423,12 +450,17 @@ impl State {
                             .reduce(Acceleration::zero, |a1, a2| a1 + a2);
                         s.update(a)
                     })
-                    // check for satellites colliding with planets
-                    .filter(|s| {
-                        !updated_planets.par_iter().any(|p| s.pos.distance(&p.pos) < p.r)
-                    })
                     .collect();
-
+                // check for satellites colliding with planets
+                let (updated_satellites, crashing_satellites): (Vec<Satellite>, Vec<Satellite>) = updated_satellites.into_iter().partition(|s| {
+                    !updated_planets.par_iter().any(|p| s.pos.distance(&p.pos) < p.r)
+                });
+                // if the focused satellite crashes into a planet, unfocus it
+                if let Some(Focus::Satellite(sid)) = self.focused {
+                    if crashing_satellites.iter().any(|s| s.id == sid) {
+                        self.focused = None;
+                    }
+                }
                 // apply updates at the end
                 self.planets = updated_planets;
                 self.satellites = updated_satellites;
@@ -438,7 +470,9 @@ impl State {
 
     fn render(&mut self, args: &RenderArgs, font: &mut GlyphCache, gl: &mut GlGraphics) {
         // check if the hovered planet has changed
-        self.hovered = self.planets.iter().filter(|p| p.contains_point(self.cursor[0], self.cursor[1])).next().map(|p| p.id);
+        self.hovered = self.planets.iter().filter(|p| p.contains_point(self.cursor[0], self.cursor[1])).next().map(|p| Focus::Planet(p.id)).or(
+            self.satellites.iter().filter(|s| s.contains_point(self.cursor[0], self.cursor[1])).next().map(|s| Focus::Satellite(s.id))
+        );
 
         use graphics::*;
         gl.draw(args.viewport(), |c, gl| {
@@ -446,12 +480,26 @@ impl State {
             self.planets.iter().for_each(|p| p.render(&c, gl));
             self.satellites.iter().for_each(|s| s.render(&c, gl));
 
-            if let Some(pid) = self.focused.or(self.hovered) {
-                let p = self.planets.iter().find(|p| p.id == pid).unwrap();
-                let r = p.r * 1.5;
-                let ll = p.r * 3.0 / 2.5;
-                let x = p.pos.x;
-                let y = p.pos.y;
+            let deets: Option<(f64, f64, f64, f64, Vec<String>)> = match self.focused.or(self.hovered) {
+                Some(Focus::Planet(pid)) => {
+                    let p = self.planets.iter().find(|p| p.id == pid).unwrap();
+                    let r = p.r * 1.5;
+                    let ll = p.r * 3.0 / 2.5;
+                    let x = p.pos.x;
+                    let y = p.pos.y;
+                    Some((r, ll, x, y, p.facts()))
+                },
+                Some(Focus::Satellite(sid)) => {
+                    let s = self.satellites.iter().find(|s| s.id == sid).unwrap();
+                    let r = Satellite::R * 1.5;
+                    let ll = Satellite::R * 3.0 / 2.5;
+                    let x = s.pos.x;
+                    let y = s.pos.y;
+                    Some((r, ll, x, y, s.facts()))
+                },
+                None => None,
+            };
+            if let Some((r, ll, x, y, facts)) = deets {
                 line(GREEN, 1.0, [x - r, y - r, x - r + ll, y - r], c.transform, gl);
                 line(GREEN, 1.0, [x - r, y - r, x - r, y - r + ll], c.transform, gl);
                 line(GREEN, 1.0, [x + r, y - r, x + r - ll, y - r], c.transform, gl);
@@ -460,10 +508,11 @@ impl State {
                 line(GREEN, 1.0, [x - r, y + r, x - r, y + r - ll], c.transform, gl);
                 line(GREEN, 1.0, [x + r, y + r, x + r - ll, y + r], c.transform, gl);
                 line(GREEN, 1.0, [x + r, y + r, x + r, y + r - ll], c.transform, gl);
-                text(WHITE, 22, &format!("radius: {:.1?}", p.r), font, c.transform.trans(100.0, 300.0), gl).unwrap();
-                text(WHITE, 22, &format!("mass: {:.1?}", p.mass), font, c.transform.trans(100.0, 340.0), gl).unwrap();
-                text(WHITE, 22, &format!("speed: {:.1?}", p.vel.speed()), font, c.transform.trans(100.0, 380.0), gl).unwrap();
-                text(WHITE, 22, &format!("position: {:.1?}, {:.1?}", p.pos.x, p.pos.y), font, c.transform.trans(100.0, 420.0), gl).unwrap();
+                let mut fact_y = 300.0;
+                for fact in facts {
+                    text(WHITE, 22, &fact, font, c.transform.trans(100.0, fact_y), gl).unwrap();
+                    fact_y += 40.0;
+                }
             }
 
             text(WHITE, 22, &format!("fps: {}", self.fps.tick()), font, c.transform.trans(100.0, 100.0), gl).unwrap();
@@ -479,7 +528,7 @@ impl State {
             self.planets.clear();
             self.satellites.clear();
             self.focused = None;
-            self.random_setup(500, 0, w, h);
+            self.random_setup(500, 20, w, h);
         }
     }
 }
@@ -533,7 +582,7 @@ fn main() {
                     state.planets.clear();
                     state.satellites.clear();
                     let Size { width, height } = window.size();
-                    state.random_setup(500, 0, width, height);
+                    state.random_setup(500, 20, width, height);
                 },
                 Button::Keyboard(Key::NumPadPlus) | Button::Keyboard(Key::Equals) => {
                     state.increase_simulation_speed();
