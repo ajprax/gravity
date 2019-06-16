@@ -18,6 +18,7 @@ use piston::window::WindowSettings;
 use glutin_window::GlutinWindow;
 use opengl_graphics::GlyphCache;
 use opengl_graphics::TextureSettings;
+use piston::window::{AdvancedWindow, Size, Window};
 
 
 #[derive(Clone, Copy, Debug)]
@@ -200,10 +201,6 @@ impl Satellite {
     }
 }
 
-struct Orbit {
-
-}
-
 const BLACK:  [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 const GREEN:  [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 const RED:    [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -342,7 +339,7 @@ impl State {
     }
 
     fn decrease_simulation_speed(&mut self) {
-        if self.simulation_speed > 0 {
+        if self.simulation_speed > 1 {
             self.simulation_speed -= 1;
         }
     }
@@ -410,9 +407,9 @@ impl State {
             clear(BLACK, gl);
             self.planets.iter().for_each(|p| p.render(&c, gl));
             self.satellites.iter().for_each(|s| s.render(&c, gl));
-            text(WHITE, 32, &format!("fps: {}", self.fps.tick()), font, c.transform.trans(100.0, 100.0), gl);
-            text(WHITE, 32, &format!("planets: {}", self.planets.len()), font, c.transform.trans(100.0, 150.0), gl);
-            text(WHITE, 32, &format!("speed: {}x", self.simulation_speed), font, c.transform.trans(100.0, 200.0), gl);
+            text(WHITE, 22, &format!("fps: {}", self.fps.tick()), font, c.transform.trans(100.0, 100.0), gl).unwrap();
+            text(WHITE, 22, &format!("planets: {}", self.planets.len()), font, c.transform.trans(100.0, 150.0), gl).unwrap();
+            text(WHITE, 22, &format!("speed: {}x{}", self.simulation_speed, if self.pause { " (paused)" } else { "" }), font, c.transform.trans(100.0, 200.0), gl).unwrap();
         });
 
         let [w, h] = args.viewport().window_size;
@@ -428,9 +425,9 @@ impl State {
 }
 
 fn main() {
-    let opengl = OpenGL::V3_2;
+    let opengl = OpenGL::V4_5;
 
-    let mut window: GlutinWindow = WindowSettings::new("gravity", [2560, 1440])
+    let mut window: GlutinWindow = WindowSettings::new("gravity", [0, 0])
         .graphics_api(opengl)
         .fullscreen(true)
         .exit_on_esc(true)
@@ -446,48 +443,44 @@ fn main() {
     let mut gl = GlGraphics::new(opengl);
     let mut state = State::new();
 
-    state.random_setup(500, 0);
-
     let mut event_settings = EventSettings::new();
     event_settings.max_fps = 140;
     event_settings.ups = 240;
     let mut events = Events::new(event_settings);
 
     while let Some(e) = events.next(&mut window) {
-        if let Some(Button::Mouse(button)) = e.press_args() {
-            if let MouseButton::Left = button {
-                state.planets.clear();
-                state.satellites.clear();
-                state.random_setup(500, 0);
+        // we don't know what size the screen is, but with fullscreen(true) we'll get a resize event
+        // that sets us to the full size of the screen before getting an event that sets us to the
+        // configured size. we take advantage of that event to set the size correctly.
+        e.resize(|r| {
+            let Size { width, height } = window.size();
+            let [w, h] = r.window_size;
+            if w > width || h > height {
+                window.set_size([w, h]);
             }
-        }
+        });
 
-        if let Some(Button::Keyboard(Key::NumPadPlus)) = e.press_args() {
-            state.increase_simulation_speed();
-        }
+        e.press(|b| {
+            match b {
+                Button::Mouse(MouseButton::Left) => {
+                    state.planets.clear();
+                    state.satellites.clear();
+                    state.random_setup(500, 0);
+                },
+                Button::Keyboard(Key::NumPadPlus) | Button::Keyboard(Key::Equals) => {
+                    state.increase_simulation_speed();
+                },
+                Button::Keyboard(Key::NumPadMinus) | Button::Keyboard(Key::Minus) => {
+                    state.decrease_simulation_speed();
+                },
+                Button::Keyboard(Key::Space) => {
+                    state.pause = !state.pause;
+                },
+                _ => ()
+            }
+        });
 
-        if let Some(Button::Keyboard(Key::Equals)) = e.press_args() {
-            state.increase_simulation_speed();
-        }
-
-        if let Some(Button::Keyboard(Key::NumPadMinus)) = e.press_args() {
-            state.decrease_simulation_speed();
-        }
-
-        if let Some(Button::Keyboard(Key::Minus)) = e.press_args() {
-            state.decrease_simulation_speed();
-        }
-
-        if let Some(Button::Keyboard(Key::Space)) = e.press_args() {
-            state.pause = !state.pause;
-        }
-
-        if let Some(r) = e.render_args() {
-            state.render(&r, &mut font, &mut gl);
-        }
-
-        if let Some(u) = e.update_args() {
-            state.update(&u);
-        }
+        e.render(|r| state.render(r, &mut font, &mut gl));
+        e.update(|u| state.update(u));
     }
 }
