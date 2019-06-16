@@ -5,7 +5,7 @@ authors = ["Aaron Feldstein <ajprax@gmail.com>"]
 edition = "2018"
 
 [[bin]]
-name = "spinning-square"
+name = "gravity"
 path = "src/main.rs"
 
 [[bin]]
@@ -13,8 +13,13 @@ name= "units"
 path = "src/units.rs"
 
 [dependencies]
-piston = "0.42.0"
-piston2d-graphics = "0.30.0"
-pistoncore-glutin_window = "0.54.0"
-piston2d-opengl_graphics = "0.59.0"
 fps_counter = "1.0.0"
+piston = "0.48.0"
+piston2d-graphics = "0.32.0"
+pistoncore-glutin_window = "0.62.1"
+piston2d-opengl_graphics = "0.65.0"
+piston_window = {version = "0.99.0", features = ["glutin"]}
+rand = "0.6"
+rayon = "1.1.0"
+find_folder = "0.3.0"
+piston-texture = "0.6.0"
