@@ -19,6 +19,29 @@ use glutin_window::GlutinWindow;
 use opengl_graphics::GlyphCache;
 use opengl_graphics::TextureSettings;
 use piston::window::{AdvancedWindow, Size, Window};
+use graphics::types::Color;
+
+
+/// take a rectangle described by any two points and find the top left (min) and bottom right (max)
+/// corners
+fn rect_as_min_max(p1: [f64; 2], p2: [f64; 2]) -> [[f64;2]; 2] {
+    let [x1, y1] = p1;
+    let [x2, y2] = p2;
+    let (minx, maxx) = if x1 < x2 { (x1, x2) } else { (x2, x1) };
+    let (miny, maxy) = if y1 < y2 { (y1, y2) } else { (y2, y1) };
+    [[minx, miny], [maxx, maxy]]
+}
+
+
+fn render_bounding_box(color: Color, min: [f64; 2], max: [f64; 2], c: Context, gl: &mut GlGraphics) {
+    use graphics::line;
+    let [minx, miny] = min;
+    let [maxx, maxy] = max;
+    line(color, 1.0, [minx, miny, maxx, miny], c.transform, gl);
+    line(color, 1.0, [maxx, miny, maxx, maxy], c.transform, gl);
+    line(color, 1.0, [maxx, maxy, minx, maxy], c.transform, gl);
+    line(color, 1.0, [minx, maxy, minx, miny], c.transform, gl);
+}
 
 
 #[derive(Clone, Copy, Debug)]
@@ -34,6 +57,11 @@ impl Position {
 
     fn distance(&self, other: &Position) -> f64 {
         ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
+    }
+
+    fn in_rect(&self, (start, end): ([f64; 2], [f64; 2])) -> bool {
+        let [[minx, miny], [maxx, maxy]] = rect_as_min_max(start, end);
+        minx <= self.x && self.x < maxx && miny <= self.y && self.y < maxy
     }
 }
 
@@ -268,6 +296,7 @@ struct State {
     fps: FPSCounter,
     focused: Option<Focus>,
     hovered: Option<Focus>,
+    drag_select_start: Option<[f64; 2]>,
     cursor: [f64; 2],
 }
 
@@ -283,6 +312,7 @@ impl State {
             fps: FPSCounter::new(),
             focused: None,
             hovered: None,
+            drag_select_start: None,
             cursor: [0.0, 0.0],
         }
     }
@@ -477,9 +507,15 @@ impl State {
         use graphics::*;
         gl.draw(args.viewport(), |c, gl| {
             clear(BLACK, gl);
+            // draw planets and satellites
             self.planets.iter().for_each(|p| p.render(&c, gl));
             self.satellites.iter().for_each(|s| s.render(&c, gl));
-
+            // draw the box selection
+            if let Some(start) = self.drag_select_start {
+                let [min, max] = rect_as_min_max(start, self.cursor);
+                render_bounding_box(GREEN, min, max, c, gl);
+            }
+            // draw details about the selected planet or satellite
             let deets: Option<(f64, f64, f64, f64, Vec<String>)> = match self.focused.or(self.hovered) {
                 Some(Focus::Planet(pid)) => {
                     let p = self.planets.iter().find(|p| p.id == pid).unwrap();
@@ -514,7 +550,7 @@ impl State {
                     fact_y += 40.0;
                 }
             }
-
+            // draw general details about the state of the world
             text(WHITE, 22, &format!("fps: {}", self.fps.tick()), font, c.transform.trans(100.0, 100.0), gl).unwrap();
             text(WHITE, 22, &format!("planets: {}", self.planets.len()), font, c.transform.trans(100.0, 150.0), gl).unwrap();
             text(WHITE, 22, &format!("speed: {}x{}", self.simulation_speed, if self.pause { " (paused)" } else { "" }), font, c.transform.trans(100.0, 200.0), gl).unwrap();
@@ -576,7 +612,7 @@ fn main() {
         e.press(|b| {
             match b {
                 Button::Mouse(MouseButton::Left) => {
-                    state.focused = state.hovered;
+                    state.drag_select_start = Some(state.cursor);
                 },
                 Button::Mouse(MouseButton::Right) => {
                     state.planets.clear();
@@ -592,6 +628,32 @@ fn main() {
                 },
                 Button::Keyboard(Key::Space) => {
                     state.pause = !state.pause;
+                },
+                _ => ()
+            }
+        });
+
+        e.release(|b| {
+            match b {
+                Button::Mouse(MouseButton::Left) => {
+                    if let Some(start) = state.drag_select_start {
+                        state.drag_select_start = None;
+                        let end = state.cursor;
+                        // TODO: multiselect?
+                        for p in &state.planets {
+                            if p.pos.in_rect((start, end)) || p.contains_point(end[0], end[1]) {
+                                state.focused = Some(Focus::Planet(p.id));
+                                return
+                            }
+                        }
+                        for s in &state.satellites {
+                            if s.pos.in_rect((start, end)) || s.contains_point(end[0], end[1]) {
+                                state.focused = Some(Focus::Satellite(s.id));
+                                return
+                            }
+                        }
+                        state.focused = None;
+                    }
                 },
                 _ => ()
             }
