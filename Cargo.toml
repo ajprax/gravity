@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 find_folder = "0.3.0"
 fps_counter = "1.0.0"
+num-format = "0.4.0"
 piston = "0.48.0"
 piston-texture = "0.6.0"
 piston_window = {version = "0.99.0", features = ["glutin"]}

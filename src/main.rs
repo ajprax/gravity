@@ -8,18 +8,17 @@ use std::ops::Add;
 
 use find_folder;
 use fps_counter::FPSCounter;
+use glutin_window::GlutinWindow;
 use graphics::Context;
-use opengl_graphics::{ GlGraphics, OpenGL };
+use graphics::types::Color;
+use graphics::color
+use num_format::{Locale, ToFormattedString};
+use opengl_graphics::{GlGraphics, GlyphCache, OpenGL, TextureSettings};
+use piston::event_loop::*;
+use piston::input::*;
+use piston::window::{AdvancedWindow, Size, Window, WindowSettings};
 use rand::Rng;
 use rayon::prelude::*;
-use piston::input::*;
-use piston::event_loop::*;
-use piston::window::WindowSettings;
-use glutin_window::GlutinWindow;
-use opengl_graphics::GlyphCache;
-use opengl_graphics::TextureSettings;
-use piston::window::{AdvancedWindow, Size, Window};
-use graphics::types::Color;
 
 
 /// take a rectangle described by any two points and find the top left (min) and bottom right (max)
@@ -207,7 +206,7 @@ impl Planet {
 
     fn facts(&self) -> Vec<String> {
         vec![
-            format!("mass: {:.0?}", self.mass),
+            format!("mass: {}", (self.mass as usize).to_formatted_string(&Locale::en)),
             format!("radius: {:.2?}", self.r),
             format!("position: {:.2?}, {:.2?}", self.pos.x, self.pos.y),
             format!("velocity: {:.2?}, {:.2?}", self.vel.x, self.vel.y),
