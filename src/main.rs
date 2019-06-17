@@ -499,10 +499,14 @@ impl State {
     }
 
     fn render(&mut self, args: &RenderArgs, font: &mut GlyphCache, gl: &mut GlGraphics) {
-        // check if the hovered planet has changed
-        self.hovered = self.planets.iter().filter(|p| p.contains_point(self.cursor[0], self.cursor[1])).next().map(|p| Focus::Planet(p.id)).or(
-            self.satellites.iter().filter(|s| s.contains_point(self.cursor[0], self.cursor[1])).next().map(|s| Focus::Satellite(s.id))
-        );
+        // check if the hovered target has changed, but only if we're not drag selecting
+        // checked in render because hovered only used in render so we don't need to pay the cost on
+        // every update
+        if self.drag_select_start.is_none() {
+            self.hovered = self.planets.iter().find(|p| p.contains_point(self.cursor[0], self.cursor[1])).map(|p| Focus::Planet(p.id)).or(
+                self.satellites.iter().find(|s| s.contains_point(self.cursor[0], self.cursor[1])).map(|s| Focus::Satellite(s.id))
+            );
+        }
 
         use graphics::*;
         gl.draw(args.viewport(), |c, gl| {
@@ -511,6 +515,7 @@ impl State {
             self.planets.iter().for_each(|p| p.render(&c, gl));
             self.satellites.iter().for_each(|s| s.render(&c, gl));
             // draw the box selection
+            // TODO: preview which item will be selected?
             if let Some(start) = self.drag_select_start {
                 let [min, max] = rect_as_min_max(start, self.cursor);
                 render_bounding_box(GREEN, min, max, c, gl);
@@ -613,6 +618,8 @@ fn main() {
             match b {
                 Button::Mouse(MouseButton::Left) => {
                     state.drag_select_start = Some(state.cursor);
+                    // while drag selecting, nothing should be considered hovered
+                    state.hovered = None;
                 },
                 Button::Mouse(MouseButton::Right) => {
                     state.planets.clear();
